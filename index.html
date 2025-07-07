@@ -1,0 +1,737 @@
+﻿<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>室內空氣質素計算器 (React 版本)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 使用 React 17 版本以確保相容性 -->
+    <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <style>
+        .tooltip {
+            position: relative;
+            display: inline-block;
+        }
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 320px; 
+            background-color: #555;
+            color: #fff;
+            text-align: left;
+            border-radius: 6px;
+            padding: 8px;
+            position: absolute;
+            z-index: 10; 
+            bottom: 125%;
+            left: 50%;
+            margin-left: -160px; 
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 0.8rem;
+        }
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+        .tab-button {
+            padding: 0.5rem 1rem;
+            border-bottom: 2px solid transparent;
+            font-weight: 500;
+            color: #6b7280;
+            transition: all 0.15s ease-in-out;
+        }
+        .tab-button.active {
+            border-bottom-color: #3b82f6;
+            color: #3b82f6;
+        }
+        .tab-button:hover:not(.active) {
+            border-bottom-color: #9ca3af;
+            color: #4b5563;
+        }
+        @media print {
+            body, html {
+                height: auto !important;
+                overflow: visible !important;
+            }
+            #pdfExportContent, #checkerTabContent, #resultsArea {
+                height: auto !important;
+                overflow: visible !important;
+                page-break-inside: avoid;
+            }
+        }
+        .info-icon {
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: center;
+        }
+        .solution-icon {
+            cursor: pointer;
+            margin-left: 8px;
+            font-size: 1.1em;
+            color: #3b82f6; 
+        }
+        .pdf-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+            font-size: 0.85rem; 
+        }
+        .pdf-table th, .pdf-table td {
+            border: 1px solid #ddd;
+            padding: 6px; 
+            text-align: left;
+        }
+        .pdf-table th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .pdf-table td.status-ok { color: green; }
+        .pdf-table td.status-exceeds { color: red; }
+        .pdf-table td.status-attention { color: orange; }
+        .pdf-table td.status-not-measured { color: gray; }
+        .pdf-table td.status-info { color: blue; } 
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+     const { useState, useEffect, useRef } = React;
+
+        // InfoIcon component provides a small question mark icon for tooltips.
+        const InfoIcon = () => (
+          <i className="info-icon" style={{
+            display: 'inline-block', width: '16px', height: '16px',
+            backgroundColor: '#3b82f6', color: 'white', borderRadius: '50%',
+            textAlign: 'center', fontSize: '12px', lineHeight: '16px',
+            cursor: 'help', marginLeft: '4px', fontStyle: 'normal'
+          }}>?</i>
+        );
+
+        // Tooltip component displays a text box on hover.
+        const Tooltip = ({ text, children }) => (
+          <div className="tooltip">
+            {children}
+            <span className="tooltiptext" dangerouslySetInnerHTML={{ __html: text }}></span>
+          </div>
+        );
+        
+        // Modal component for displaying messages and alerts.
+        const Modal = ({ title, message, isOpen, onClose, isHtmlMessage = true }) => {
+          if (!isOpen) return null;
+          return (
+            <div style={{
+              display: 'block', position: 'fixed', zIndex: 1000, left: 0, top: 0,
+              width: '100%', height: '100%', overflow: 'auto', backgroundColor: 'rgba(0,0,0,0.4)'
+            }} onClick={onClose}>
+              <div style={{
+                backgroundColor: '#fefefe', margin: '10% auto', padding: '20px',
+                border: '1px solid #888', width: '80%', maxWidth: '600px',
+                borderRadius: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+              }} onClick={e => e.stopPropagation()}>
+                <div style={{ paddingBottom: '10px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h2 className="text-lg font-semibold">{title}</h2>
+                  <span style={{ color: '#aaa', float: 'right', fontSize: '28px', fontWeight: 'bold', cursor: 'pointer' }} onClick={onClose}>&times;</span>
+                </div>
+                <div style={{ paddingTop: '10px', paddingBottom: '10px', fontSize: '0.9rem', lineHeight: '1.6' }}>
+                  {isHtmlMessage ? <div dangerouslySetInnerHTML={{ __html: message }}></div> : <p>{message}</p>}
+                </div>
+                <div style={{ paddingTop: '10px', borderTop: '1px solid #eee', textAlign: 'right' }}>
+                  <button onClick={onClose} className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">關閉 (Close)</button>
+                </div>
+              </div>
+            </div>
+          );
+        };
+        
+        // Combined list of IAQ parameters for Hong Kong and Macau guidelines.
+        const iaqParameters_Combined = [
+            // Hong Kong EPD IAQ Certification Scheme - Good Class (Table 1) - Ordered
+            { id: 'hcho_30min', name: '甲醛 (30分鐘)', unit_en: 'HCHO (30-min)', base_unit: 'μg/m3', limit: 100, type: 'le', 
+              tooltipText: '短期甲醛濃度指標。香港良好級指標 ?100 μg/m3 (30分鐘平均) / 約 ?81 ppbv。', 
+              solutionText: "<ul><li>強力及持續通風換氣。</li><li>選擇低甲醛釋放的建材、傢俱。</li><li>新裝修後可空置通風一段時間。</li><li>考慮使用專門去除甲醛的空氣淨化機。</li><li>特別注意短期內可能導致甲醛濃度升高的活動（如使用某些清潔劑、新物品開箱）。</li></ul>", 
+              units: [{label: 'ppbv', factor: (24.465 / 30.03), step: 1, precision: 0}, {label: 'μg/m3', factor: 1, step: 1, precision: 0}],
+              guideline_source: '香港IAQ良好級指引'
+            },
+            { id: 'tvoc_inst_isobutylene', name: '總揮發性有機化合物 (異丁烯校準，瞬時值)', unit_en: 'TVOC (Isobutylene cal., Inst.)', base_unit: 'ppb', 
+              limit_low: 400, 
+              limit_high: 500, 
+              type: 'ap212_tvoc', 
+              tooltipText: "PID儀器（如ppbRAE 3000）對總揮發性有機化合物的瞬時讀數，通常以異丁烯校準。<br>RAE Systems AP-212應用筆記建議：<br>&lt;100 ppb：正常室外空氣<br>100-400 ppb：正常室內空氣<br>500+ ppb：潛在IAQ污染物<br><strong>注意：這些是基於儀器讀數的經驗性解讀，用於快速篩查，不等同於官方IAQ健康指引（如香港TVOC 8小時平均 ?600 μg/m3）。</strong>",
+              solutionText: "<ul><li>若讀數 > 500 ppb：表明可能存在較高的VOCs污染，建議：<ul><li>加強通風換氣。</li><li>尋找並移除潛在的高濃度VOC釋放源（如新裝修物料、化學品、清潔劑等）。</li><li>考慮使用活性炭空氣淨化裝置。</li><li>進行更詳細的IAQ評估，對照官方健康指引。</li></ul></li><li>若讀數在 401-500 ppb：需注意水平，建議：<ul><li>監測VOCs濃度變化。</li><li>檢查通風情況。</li><li>識別是否有臨時性污染源。</li></ul></li></ul>", 
+              units: [{label: 'ppb', factor: 1, step: 1, precision: 0}, {label: 'ppm', factor: 1000, step: 0.01, precision: 2}], // Note: 1 ppm = 1000 ppb for TVOC typically
+              guideline_source: 'RAE AP-212 經驗解讀值'
+            },
+            { id: 'co2_8hr', name: '二氧化碳 (8小時)', unit_en: 'CO? (8-hr)', base_unit: 'ppmv', limit: 1000, type: 'le', 
+              tooltipText: '主要由人體呼吸產生，高濃度表明通風不足。香港良好級指標 ?1000 ppmv (8小時平均)。', 
+              solutionText: "<ul><li>增加新鮮空氣供應量。</li><li>檢查通風系統。</li><li>控制室內人數。</li></ul>", 
+              units: [{label: 'ppmv', factor: 1, step: 1, precision: 0}, {label: 'mg/m3', factor: 1.8, step: 1, precision: 0}], // Approx. 1 ppm CO2 ~ 1.8 mg/m3 at 25C
+              guideline_source: '香港IAQ良好級指引'
+            },
+            { id: 'co_8hr', name: '一氧化碳 (8小時)', unit_en: 'CO (8-hr)', base_unit: 'μg/m3', limit: 7000, type: 'le', 
+              tooltipText: '主要來自不完全燃燒。香港良好級指標 ?7000 μg/m3 (8小時平均) / 約 ?6.1 ppmv。', 
+              solutionText: "<ul><li><strong>立即加強通風！</strong></li><li>檢查燃氣器具。</li><li>切勿在室內使用產生廢氣的設備。</li><li>安裝CO警報器。</li></ul>", 
+              units: [{label: 'μg/m3', factor: 1, step: 10, precision: 0}, {label: 'ppmv', factor: (24.465 / 28.01), step: 0.1, precision: 1}],
+              guideline_source: '香港IAQ良好級指引'
+            },
+            { id: 'rsp_pm10_8hr', name: '可吸入懸浮粒子 (PM??) (8小時)', unit_en: 'RSP (PM??) (8-hr)', base_unit: 'μg/m3', limit: 100, type: 'le', 
+              tooltipText: '空氣中直徑小於或等於10微米的顆粒物。香港良好級指標 ?100 μg/m3 (8小時平均)。', 
+              solutionText: "<ul><li>加強通風。</li><li>使用空氣淨化機。</li><li>定期清潔。</li><li>檢查空調濾網。</li></ul>", 
+              units: [{label: 'mg/m3', factor: 0.001, step: 0.001, precision: 3}, {label: 'μg/m3', factor: 1, step: 1, precision: 0}],
+              guideline_source: '香港IAQ良好級指引'
+            },
+            { id: 'no2_8hr', name: '二氧化氮 (8小時)', unit_en: 'NO? (8-hr)', base_unit: 'μg/m3', limit: 150, type: 'le', 
+              tooltipText: '主要來自燃燒過程。香港良好級指標 ?150 μg/m3 (8小時平均) / 約 ?80 ppbv。', 
+              solutionText: "<ul><li>檢查明火煮食設備。</li><li>開啟抽油煙機。</li><li>減少室外廢氣進入。</li></ul>", 
+              units: [{label: 'μg/m3', factor: 1, step: 1, precision: 0}, {label: 'ppbv', factor: (24.465 / 46.01), step: 1, precision: 0}],
+              guideline_source: '香港IAQ良好級指引'
+            },
+            { id: 'no2_1hr', name: '二氧化氮 (1小時)', unit_en: 'NO? (1-hr)', base_unit: 'μg/m3', limit: 200, type: 'le', 
+              tooltipText: '主要來自燃燒過程。香港良好級指標 ?200 μg/m3 (1小時平均) / 約 ?106 ppbv。', 
+              solutionText: "<ul><li>同8小時NO?建議。</li><li>注意短期高排放源。</li></ul>", 
+              units: [{label: 'μg/m3', factor: 1, step: 1, precision: 0}, {label: 'ppbv', factor: (24.465 / 46.01), step: 1, precision: 0}],
+              guideline_source: '香港IAQ良好級指引'
+            },
+            { id: 'o3_8hr', name: '臭氧 (8小時)', unit_en: 'O? (8-hr)', base_unit: 'μg/m3', limit: 120, type: 'le', 
+              tooltipText: '主要來自室外或室內設備。香港良好級指標 ?120 μg/m3 (8小時平均) / 約 ?61 ppbv。', 
+              solutionText: "<ul><li>避免使用產生臭氧的設備。</li><li>影印機等設備置於通風良好處。</li><li>室外臭氧高時減少開窗。</li></ul>", 
+              units: [{label: 'μg/m3', factor: 1, step: 1, precision: 0}, {label: 'ppbv', factor: (24.465 / 48.00), step: 1, precision: 0}],
+              guideline_source: '香港IAQ良好級指引'
+            },
+            { id: 'radon_8hr', name: '氡氣 (8小時)', unit_en: 'Radon (8-hr)', base_unit: 'Bq/m3', limit: 150, type: 'le', 
+              tooltipText: '一種放射性氣體。香港良好級指標 ?150 Bq/m3 (8小時平均)。', 
+              solutionText: "<ul><li>加強底層和地庫通風。</li><li>密封地面牆壁裂縫。</li><li>考慮氡氣緩解系統。</li></ul>", 
+              units: [{label: 'Bq/m3', factor: 1, step: 1, precision: 0}],
+              guideline_source: '香港IAQ良好級指引'
+            },
+            { id: 'bacteria_8hr', name: '空氣中細菌 (8小時)', unit_en: 'Airborne Bacteria (8-hr)', base_unit: 'cfu/m3', limit: 1000, type: 'le', 
+              tooltipText: '空氣中的微生物。香港良好級指標 ?1000 cfu/m3 (8小時平均)。', 
+              solutionText: "<ul><li>控制室內濕度。</li><li>清潔消毒空調系統。</li><li>保持清潔衛生。</li></ul>", 
+              units: [{label: 'cfu/m3', factor: 1, step: 10, precision: 0}],
+              guideline_source: '香港IAQ良好級指引'
+            },
+            // Macau DSPA Parameters (Table 2) - These are separate and might have different limits or units
+            // For simplicity, this calculator focuses on Hong Kong Good Class, but Macau parameters are listed for reference in the summary.
+            // If Macau specific calculation is needed, these would be integrated similarly.
+            // Example of a Macau specific parameter if it were to be integrated:
+            { id: 'macau_temp', name: '溫度 (澳門)', unit_en: 'Temperature (Macau)', base_unit: '°C', limit_low: 22, limit_high: 28, type: 'range', 
+              tooltipText: '指室內的熱舒適度。澳門指引建議參考值 25±3 °C (8小時平均)。', 
+              solutionText: "<ul><li>檢查空調設定，確保溫度設定在指引的 $22-28 ^{\circ}C$ 範圍內。</li><li>考慮建築物隔熱性能。</li><li>檢查窗戶是否有過多太陽直射。</li><li>排查室內是否有過多發熱設備。</li></ul>", 
+              units: [{label: '°C', factor: 1, step: 0.1, precision: 1}],
+              guideline_source: '澳門IAQ指引'
+            },
+            { id: 'macau_rh', name: '相對濕度 (澳門)', unit_en: 'Relative Humidity (Macau)', base_unit: '%', limit: 70, type: 'le', 
+              tooltipText: '空氣中水蒸氣的含量。澳門指引建議參考值 ?70% (8小時平均)。', 
+              solutionText: "<ul><li>若過高 ( >70% ): 檢查是否有水源洩漏、增加通風、使用抽濕機。</li><li>若過低 (例如 <30% ): 使用加濕器。</li></ul>", 
+              units: [{label: '%', factor: 1, step: 1, precision: 0}],
+              guideline_source: '澳門IAQ指引'
+            },
+            // ... other Macau parameters would follow if fully integrated for calculation.
+        ];
+
+        // IAQChecker component handles input and assessment logic.
+        const IAQChecker = ({ showModal, setResultsHTML, setExportButtonsVisible, testLocation, testDate, testTime, premisesType }) => {
+          // Initialize input values for each parameter to empty strings.
+          const initialValues = iaqParameters_Combined.reduce((acc, param) => {
+            acc[param.id] = '';
+            return acc;
+          }, {});
+          const [inputValues, setInputValues] = useState(initialValues);
+
+          // Initialize selected units for each parameter to its first available unit.
+          const initialUnits = iaqParameters_Combined.reduce((acc, param) => {
+            if (param.units) {
+              acc[param.id] = param.units[0].label; 
+            }
+            return acc;
+          }, {});
+          const [selectedUnits, setSelectedUnits] = useState(initialUnits);
+
+          // Handle changes in input fields.
+          const handleInputChange = (id, value) => {
+            setInputValues(prev => ({ ...prev, [id]: value }));
+          };
+
+          // Handle changes in unit selection.
+          const handleUnitChange = (id, unitLabel) => {
+            setSelectedUnits(prev => ({ ...prev, [id]: unitLabel }));
+          };
+          
+          // Assess IAQ based on input values and selected guidelines.
+          const assessIAQ = () => {
+            setResultsHTML(''); // Clear previous results
+            setExportButtonsVisible(false); // Hide export buttons initially
+
+            // Validate required general information
+            if (!testLocation.trim()) {
+                showModal('輸入提示 (Input Required)', '請輸入檢測地點。<br>Please enter Test Location.');
+                return;
+            }
+            if (!premisesType.trim()) {
+                showModal('輸入提示 (Input Required)', '請輸入場所類型。<br>Please enter Premises Type.');
+                return;
+            }
+            if (!testDate) {
+                showModal('輸入提示 (Input Required)', '請選擇檢測日期。<br>Please select Test Date.');
+                return;
+            }
+            if (!testTime) {
+                showModal('輸入提示 (Input Required)', '請選擇檢測時間。<br>Please select Test Time.');
+                return;
+            }
+
+            let processedResultsArray = []; // Stores individual parameter assessment results
+            let allMeetStandard = true; // Flag for overall assessment
+            let anyExceedsPrimaryStandard = false; // Flag if any parameter exceeds its primary standard
+            let anyNeedsAttention = false; // Flag if any parameter needs attention (e.g., TVOC AP-212 mid-range)
+            let anyNotMeasured = false; // Flag if any parameter was not measured
+            let measuredCount = 0; // Count of parameters with input values
+
+            iaqParameters_Combined.forEach(param => {
+                const inputValueStr = inputValues[param.id];
+
+                if (inputValueStr === '') { // If no input for this parameter
+                    anyNotMeasured = true; 
+                    return; // Skip to next parameter
+                }
+                
+                measuredCount++;
+                const currentUnitLabel = selectedUnits[param.id] || param.units[0].label;
+                const unitInfo = param.units.find(u => u.label === currentUnitLabel) || param.units[0];
+                const conversionFactorForSelectedUnit = unitInfo.factor; // Factor to convert selected unit to base_unit for comparison
+                const displayPrecision = unitInfo.precision;
+                
+                let notesForParam = param.guideline_source;
+                if (param.id === 'tvoc_inst_isobutylene') {
+                    notesForParam = `RAE AP-212 經驗解讀值`;
+                }
+                
+                const inputValue = parseFloat(inputValueStr);
+
+                if (isNaN(inputValue)) {
+                    showModal('輸入錯誤 (Input Error)', `${param.name} 的測量值必須為有效數值。`);
+                    allMeetStandard = false; anyExceedsPrimaryStandard = true; // Mark as error
+                    processedResultsArray.push({ 
+                        id: param.id, name: `${param.name} (${param.unit_en})`, value: '錯誤', limitText: 'N/A', unit: currentUnitLabel, 
+                        statusIcon: '?', statusText: '輸入無效', statusClass: 'status-exceeds', notes: '請修正輸入值', solutionText: param.solutionText, showSolutionButton: false
+                    });
+                    return; // Skip to next parameter
+                }
+
+                // Convert input value to base unit for comparison with limit
+                const valueInBaseUnit = inputValue / conversionFactorForSelectedUnit;
+                let status = '', statusText = '', statusClass = '', limitTextInSelectedUnit = '', showSolutionButton = false;
+
+                // Determine status based on parameter type and limits
+                if (param.type === 'le') { // Less than or equal to limit
+                    limitTextInSelectedUnit = `? ${(param.limit * conversionFactorForSelectedUnit).toFixed(displayPrecision)}`;
+                    if (valueInBaseUnit <= param.limit) {
+                        status = '?'; statusText = '符合標準'; statusClass = 'status-ok';
+                    } else {
+                        status = '?'; statusText = '超出標準'; statusClass = 'status-exceeds';
+                        allMeetStandard = false; anyExceedsPrimaryStandard = true; showSolutionButton = true;
+                    }
+                } else if (param.type === 'range') { // Within a range (e.g., Macau Temperature)
+                    const limitLowInSelectedUnit = (param.limit_low * conversionFactorForSelectedUnit).toFixed(displayPrecision);
+                    const limitHighInSelectedUnit = (param.limit_high * conversionFactorForSelectedUnit).toFixed(displayPrecision);
+                    limitTextInSelectedUnit = `${limitLowInSelectedUnit} - ${limitHighInSelectedUnit}`;
+                     if (valueInBaseUnit >= param.limit_low && valueInBaseUnit <= param.limit_high) {
+                        status = '?'; statusText = '符合標準'; statusClass = 'status-ok';
+                    } else {
+                        status = '?'; statusText = '超出標準'; statusClass = 'status-exceeds';
+                        allMeetStandard = false; anyExceedsPrimaryStandard = true; showSolutionButton = true;
+                    }
+                } else if (param.type === 'ap212_tvoc') { // Specific logic for RAE AP-212 TVOC readings
+                    const limitLowInSelectedUnit = (param.limit_low * conversionFactorForSelectedUnit).toFixed(displayPrecision);
+                    const limitHighInSelectedUnit = (param.limit_high * conversionFactorForSelectedUnit).toFixed(displayPrecision);
+                    limitTextInSelectedUnit = `<${limitLowInSelectedUnit} (正常) / <${limitHighInSelectedUnit} (潛在污染)`;
+
+                    if (valueInBaseUnit < param.limit_low) { // Normal level
+                        status = '?'; statusText = '正常室內水平'; statusClass = 'status-ok';
+                    } else if (valueInBaseUnit >= param.limit_low && valueInBaseUnit < param.limit_high) { // Attention level
+                        status = '??'; statusText = '需注意水平'; statusClass = 'status-attention';
+                        anyNeedsAttention = true; allMeetStandard = false; showSolutionButton = true;
+                    } else { // Potential contamination
+                        status = '?'; statusText = '高於參考區間/潛在污染'; statusClass = 'status-exceeds';
+                        anyExceedsPrimaryStandard = true; allMeetStandard = false; showSolutionButton = true; 
+                    }
+                }
+                
+                processedResultsArray.push({
+                    id: param.id, name: `${param.name} (${param.unit_en})`, value: inputValue.toFixed(displayPrecision),
+                    limitText: limitTextInSelectedUnit, unit: currentUnitLabel, statusIcon: status, statusText: statusText,
+                    statusClass: statusClass, notes: notesForParam, solutionText: param.solutionText, showSolutionButton: showSolutionButton
+                });
+            });
+            
+            // Determine overall assessment status text, icon, and color
+            let overallStatusText = "", overallStatusIcon = "", overallStatusColorClass = "";
+
+            if (measuredCount === 0) { // No values entered
+                overallStatusText = "沒有輸入任何檢測值";
+                overallStatusIcon = "?";
+                overallStatusColorClass = "text-gray-700 bg-gray-100";
+            } else if (anyExceedsPrimaryStandard) { // At least one parameter exceeds standard
+                overallStatusText = "部分超出標準"; overallStatusIcon = "?"; overallStatusColorClass = "text-red-700 bg-red-100";
+            } else if (anyNeedsAttention) { // At least one parameter needs attention
+                overallStatusText = "部分參數需注意"; overallStatusIcon = "??"; overallStatusColorClass = "text-yellow-700 bg-yellow-100";
+                 if (anyNotMeasured && measuredCount > 0) overallStatusText += " (部分未檢測)";
+            } else if (allMeetStandard && !anyNotMeasured && measuredCount > 0) { // All measured parameters meet standards
+                overallStatusText = "全部符合標準"; overallStatusIcon = "?"; overallStatusColorClass = "text-green-700 bg-green-100";
+            } else if (allMeetStandard && anyNotMeasured && measuredCount > 0) { // Measured parameters meet standards, some not measured
+                overallStatusText = "符合標準 (部分未檢測)"; overallStatusIcon = "?"; overallStatusColorClass = "text-green-700 bg-green-100";
+            } else { // Default case, should ideally not be reached if logic is correct
+                overallStatusText = "請檢查輸入"; overallStatusIcon = "?"; overallStatusColorClass = "text-gray-700 bg-gray-100";
+            }
+
+            // Construct HTML for the overall status display
+            let tableHTML = `<div class="${overallStatusColorClass} p-4 rounded-md shadow mb-4">
+                                <h3 class="text-xl font-semibold"><span class="text-2xl mr-2">${overallStatusIcon}</span> 整體評估狀況: ${overallStatusText}</h3>
+                             </div>`;
+            
+            // Construct HTML for the detailed parameter results table if any parameters were measured
+            if (measuredCount > 0) {
+                tableHTML += `<h4 class="text-lg font-semibold mb-2">詳細參數評估 (Detailed Parameter Assessment):</h4>
+                             <table class="pdf-table"><thead><tr><th>參數 (Parameter)</th><th>測量值 (Measured)</th><th>指引參考值 (Guideline)</th><th>單位 (Unit)</th><th>狀況 (Status)</th><th>備註 (Notes)</th></tr></thead><tbody>`;
+                processedResultsArray.forEach(res => { 
+                        // Add solution button icon if applicable
+                        const solutionButtonHTML = res.showSolutionButton 
+                            ? `<span class="solution-icon" onclick="document.getElementById('solutionButton-${res.id}').click()">??</span><button id="solutionButton-${res.id}" style="display:none;" data-solution="${encodeURIComponent(res.solutionText)}" data-paramname="${res.name}"></button>` 
+                            : '';
+                        tableHTML += `<tr><td>${res.name}</td><td>${res.value}</td><td>${res.limitText}</td><td>${res.unit}</td><td class="${res.statusClass}">${res.statusIcon} ${res.statusText}${solutionButtonHTML}</td><td dangerouslySetInnerHTML={{ __html: res.notes }}></td></tr>`;
+                });
+                tableHTML += `</tbody></table>`;
+            }
+            
+            // Construct the full HTML for the results area, including disclaimer
+            const fullResultsHTML = `
+                ${tableHTML}
+                <p class="text-xs text-gray-500 mt-6">免責聲明：本工具根據香港環保署《辦公室及公眾場所室內空氣質素檢定計劃指南》良好級指標（部分參數參考儀器應用筆記或預設值）提供信息整合和計算，結果僅供參考，不能替代專業檢測機構的現場評估或環保署的官方解釋。所有室內空氣質素管理應以香港現行有效法律及官方指引為準。<br>Disclaimer: This tool integrates and calculates information based on the HK EPD "IAQ Certification Scheme for Offices and Public Places" Good Class Objectives (with some parameters referencing instrument application notes or defaults). The results are for reference only and cannot replace on-site assessment by professional testing organizations or official interpretations by the EPD. All IAQ management should be based on the current effective laws and official guidelines of Hong Kong.</p>
+            `;
+
+            setResultsHTML(fullResultsHTML); // Update the state with the generated HTML
+            if (measuredCount > 0) {
+                setExportButtonsVisible(true); // Show export buttons if there are results
+            }
+
+            // Add event listeners for solution buttons after a short delay to ensure DOM is updated
+            setTimeout(() => {
+                processedResultsArray.forEach(res => {
+                    if (res.showSolutionButton) {
+                        const btn = document.getElementById(`solutionButton-${res.id}`);
+                        if (btn) {
+                            btn.addEventListener('click', () => {
+                                showModal(`改善建議: ${res.name}`, decodeURIComponent(btn.dataset.solution), true);
+                            });
+                        }
+                    }
+                });
+            }, 0);
+          };
+
+          // Render the input form for IAQ parameters
+          return (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+                {iaqParameters_Combined.map(param => {
+                  const currentUnit = selectedUnits[param.id] || param.units[0].label;
+                  const unitDetail = param.units.find(u => u.label === currentUnit) || param.units[0];
+                  let placeholderExample = "";
+                  // Generate placeholder example based on parameter type and limits
+                  if (param.type === 'ap212_tvoc') {
+                      placeholderExample = (param.limit_low * unitDetail.factor * 0.5).toFixed(unitDetail.precision); 
+                  } else if (param.type === 'range') {
+                      placeholderExample = ((param.limit_low + param.limit_high)/2 * unitDetail.factor).toFixed(unitDetail.precision);
+                  } else { // 'le' type
+                      placeholderExample = (param.limit * unitDetail.factor * 0.8).toFixed(unitDetail.precision);
+                  }
+
+
+                  return (
+                    <div key={param.id}>
+                      <label htmlFor={param.id} className="block text-sm font-medium text-gray-700">
+                        {`${param.name} (${param.unit_en})`}
+                        <Tooltip text={param.tooltipText}>
+                          <InfoIcon />
+                        </Tooltip>
+                      </label>
+                      <div className="mt-1 flex rounded-md shadow-sm">
+                          <input 
+                            type="number" 
+                            id={param.id} 
+                            value={inputValues[param.id]} 
+                            onChange={e => handleInputChange(param.id, e.target.value)} 
+                            className="flex-1 block w-full min-w-0 rounded-none rounded-l-md border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-blue-500 sm:text-sm" 
+                            placeholder={`例如: ${placeholderExample}`}
+                            step={unitDetail.step} // Set step for number input based on unit precision
+                          />
+                          {param.units.length > 1 ? ( // If multiple units are available, show a dropdown
+                            <select 
+                                value={currentUnit} 
+                                onChange={(e) => handleUnitChange(param.id, e.target.value)}
+                                className="inline-flex items-center rounded-r-md border border-l-0 border-gray-300 bg-gray-50 px-3 text-sm text-gray-500 focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                {param.units.map(u => <option key={u.label} value={u.label}>{u.label}</option>)}
+                            </select>
+                          ) : ( // Otherwise, display the single unit
+                            <span className="inline-flex items-center rounded-r-md border border-l-0 border-gray-300 bg-gray-50 px-3 text-sm text-gray-500">{param.units[0].label}</span>
+                          )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <button onClick={assessIAQ} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-md focus:outline-none focus:shadow-outline transition duration-150 ease-in-out">
+                評估IAQ水平 (Assess IAQ Level)
+              </button>
+            </div>
+          );
+        };
+
+        // IAQGuidelineSummary component displays a summary of IAQ guidelines.
+        const IAQGuidelineSummary = () => (
+          <div className="space-y-4 text-sm text-gray-700">
+            <h2 className="text-xl font-semibold text-gray-800">香港及澳門室內空氣質素指引摘要 (HK & Macau IAQ Guideline Summary)</h2>
+            <p className="text-gray-600">以下摘要主要參考香港環保署《辦公室及公眾場所室內空氣質素檢定計劃指南》（良好級）及《澳門一般公共場所室內空氣質素指引》。完整指引請查閱相關官方網站。</p>
+            <div className="space-y-3 p-4 bg-gray-50 rounded-md border">
+              <div>
+                <h3 className="font-semibold text-gray-700">香港IAQ指標 (HK IAQ Objectives - Good Class)</h3>
+                <ul className="list-disc list-inside text-gray-600 pl-4">
+                  <li>甲醛 (HCHO): ?100 μg/m3 (30分鐘)</li>
+                  <li>總揮發性有機化合物 (TVOC): ?600 μg/m3 (8小時)</li>
+                  <li>二氧化碳 (CO?): ?1000 ppmv (8小時)</li>
+                  <li>一氧化碳 (CO): ?7000 μg/m3 (8小時)</li>
+                  <li>可吸入懸浮粒子 (PM??): ?100 μg/m3 (8小時)</li>
+                  <li>二氧化氮 (NO?): ?150 μg/m3 (8小時), ?200 μg/m3 (1小時)</li>
+                  <li>臭氧 (O?): ?120 μg/m3 (8小時)</li>
+                  <li>氡氣 (Radon): ?150 Bq/m3 (8小時)</li>
+                  <li>空氣中細菌: ?1000 cfu/m3 (8小時)</li>
+                </ul>
+              </div>
+              <div className="mt-4">
+                <h3 className="font-semibold text-gray-700">澳門IAQ指標 (Macau IAQ Guideline - Table 2)</h3>
+                 <ul className="list-disc list-inside text-gray-600 pl-4">
+                    <li>溫度: 25±3 °C (8小時平均)</li>
+                    <li>相對濕度: ?70 % (8小時平均)</li>
+                    <li>空氣流動速度: ?0.2 m/s (8小時平均)</li>
+                    <li>一氧化碳 (CO): ?10 mg/m3 (8小時平均)</li>
+                    <li>二氧化碳 (CO?): ?0.1 % (即1000 ppm) (8小時平均)</li>
+                    <li>二氧化氮 (NO?): ?0.16 mg/m3 (8小時平均)</li>
+                    <li>可吸入懸浮粒子 (PM??): ?0.15 mg/m3 (8小時平均)</li>
+                    <li>總揮發性有機化合物 (TVOC): ?0.6 mg/m3 (8小時平均)</li>
+                    <li>臭氧 (O?): ?0.1 mg/m3 (8小時平均)</li>
+                    <li>氡氣 (Rn): ?100 Bq/m3 (8小時平均)</li>
+                    <li>甲醛 (HCHO): ?0.08 mg/m3 (8小時平均)</li>
+                    <li>細菌: ?1000 CFU/m3 (8小時平均)</li>
+                    <li>真菌: ?1000 CFU/m3 (8小時平均)</li>
+                 </ul>
+              </div>
+              <p className="italic mt-2">更多關於取樣、評估方法、管理策略等詳細信息，請參閱官方指南。</p>
+            </div>
+            <p className="text-xs text-gray-500 mt-4">注意：本摘要僅供快速參考，詳細內容和具體要求應以相關官方發佈的完整指南為準。</p>
+          </div>
+        );
+
+        // Main App component that orchestrates the UI.
+        function App() {
+          const [activeTab, setActiveTab] = useState('checker'); // Controls active tab ('checker' or 'summary')
+          const [modalInfo, setModalInfo] = useState({ isOpen: false, title: '', message: '', isHtml: true }); // State for modal dialog
+          const [resultsHTML, setResultsHTML] = useState(''); // HTML string for displaying assessment results
+          const [exportButtonsVisible, setExportButtonsVisible] = useState(false); // Controls visibility of export buttons
+          const [testLocation, setTestLocation] = useState(''); // Input for test location
+          const [premisesType, setPremisesType] = useState(''); // Input for premises type
+          const [testDate, setTestDate] = useState(''); // Input for test date
+          const [testTime, setTestTime] = useState(''); // Input for test time
+          const pdfExportRootRef = useRef(null); // Ref for the root element to capture for PDF export
+
+          // Function to show the modal dialog
+          const showAppModal = (title, message, isHtml = true) => {
+            setModalInfo({ isOpen: true, title, message, isHtml });
+          };
+          // Function to close the modal dialog
+          const closeAppModal = () => {
+            setModalInfo({ isOpen: false, title: '', message: '', isHtml: true });
+          };
+
+          // Function to export results as PDF using html2pdf.js
+          const exportPDF = () => {
+            if (!resultsHTML) { // Check if there are results to export
+              showAppModal('錯誤 (Error)', '請先評估IAQ水平以生成結果報告。');
+              return;
+            }
+            const elementToCapture = pdfExportRootRef.current.querySelector('#pdfExportContent'); // The content area to capture
+            const exportButtons = pdfExportRootRef.current.querySelector('#exportButtonsContainer'); // The export buttons container
+            if (!elementToCapture) {
+              showAppModal('錯誤 (Error)', '無法找到用於匯出PDF的內容區域。');
+              return;
+            }
+            // Temporarily hide export buttons during PDF generation
+            const originalDisplayButtons = exportButtons ? exportButtons.style.display : '';
+            if (exportButtons) exportButtons.style.display = 'none';
+            
+            // Temporarily adjust parent elements' overflow and height for better PDF capture
+            let parent = elementToCapture.parentElement;
+            const originalParentStyles = [];
+            while(parent && parent !== document.body) {
+                originalParentStyles.push({el: parent, overflow: parent.style.overflow, height: parent.style.height});
+                parent.style.overflow = 'visible';
+                parent.style.height = 'auto';
+                parent = parent.parentElement;
+            }
+
+            // Construct header HTML for the PDF
+            const pdfHeaderHTML = `
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <h2 style="font-size: 1.5em; font-weight: bold;">室內空氣質素計算結果</h2>
+                    <p style="font-size: 0.9em;">Indoor Air Quality Calculation Results</p>
+                </div>
+                <div style="margin-bottom: 20px; font-size: 0.9em;">
+                    <p><strong>檢測地點 (Test Location):</strong> ${testLocation || '未提供'}</p>
+                    <p><strong>場所類型 (Premises Type):</strong> ${premisesType || '未提供'}</p>
+                    <p><strong>檢測日期 (Test Date):</strong> ${testDate || '未提供'}</p>
+                    <p><strong>檢測時間 (Test Time):</strong> ${testTime || '未提供'}</p>
+                </div>
+            `;
+            // Create a temporary element to hold the content for PDF generation
+            const tempExportElement = document.createElement('div');
+            // Clone the results table and remove solution icons for PDF
+            const resultsTableClone = elementToCapture.querySelector('.pdf-table');
+            let resultsTableHTML = '';
+            if (resultsTableClone) { 
+                const clonedTable = resultsTableClone.cloneNode(true);
+                clonedTable.querySelectorAll('.solution-icon').forEach(icon => icon.remove()); // Remove interactive icons
+                resultsTableHTML = clonedTable.outerHTML;
+            }
+
+            // Get HTML for overall status, details header, and disclaimer
+            const overallStatusDiv = elementToCapture.querySelector('div[class*="bg-"]'); // Selects the overall status div
+            let overallStatusHTML = overallStatusDiv ? overallStatusDiv.outerHTML : '';
+            const detailsHeader = elementToCapture.querySelector('h4'); // Selects the "Detailed Parameter Assessment" header
+            let detailsHeaderHTML = detailsHeader ? detailsHeader.outerHTML : '';
+            const disclaimerP = elementToCapture.querySelector('p.text-xs.text-gray-500'); // Selects the disclaimer paragraph
+            let disclaimerHTML = disclaimerP ? disclaimerP.outerHTML : '';
+            // Assemble the HTML for PDF
+            tempExportElement.innerHTML = pdfHeaderHTML + overallStatusHTML + detailsHeaderHTML + resultsTableHTML + disclaimerHTML;
+          
+            showAppModal("生成PDF (Generating PDF)", "正在準備PDF文件，請稍候...");
+            window.scrollTo(0, 0); // Scroll to top to ensure full capture
+          
+            // Use setTimeout to allow modal to render before starting PDF generation
+            setTimeout(() => {
+              const opt = { // Options for html2pdf.js
+                margin: [0.5, 0.5, 0.5, 0.5], // Margins in inches [top, left, bottom, right]
+                filename: 'IAQ計算結果.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true, logging: false, scrollX: 0, scrollY: -window.scrollY, windowWidth: document.documentElement.scrollWidth, windowHeight: document.documentElement.scrollHeight, letterRendering: true, removeContainer: true },
+                jsPDF: { unit: 'in', format: 'a4', orientation: 'portrait' },
+                pagebreak: { mode: ['avoid-all', 'css', 'legacy'] } // Page break handling
+              };
+              if (window.html2pdf) { // Check if html2pdf library is loaded
+                window.html2pdf().from(tempExportElement).set(opt).save()
+                  .then(() => closeAppModal()) // Close modal on success
+                  .catch(err => { // Handle errors during PDF generation
+                    console.error("PDF Export Error:", err); closeAppModal();
+                    showAppModal('PDF 輸出錯誤', '無法生成PDF文件，請檢查控制台錯誤訊息或稍後再試。');
+                  })
+                  .finally(() => { // Restore original styles
+                    if (exportButtons) exportButtons.style.display = originalDisplayButtons;
+                    originalParentStyles.forEach(s => { s.el.style.overflow = s.overflow; s.el.style.height = s.height; });
+                  });
+              } else { // html2pdf library not loaded
+                console.error("html2pdf.js is not loaded"); closeAppModal();
+                showAppModal('PDF 輸出錯誤', 'PDF生成工具未能成功載入，請刷新頁面再試。');
+                if (exportButtons) exportButtons.style.display = originalDisplayButtons;
+                originalParentStyles.forEach(s => { s.el.style.overflow = s.overflow; s.el.style.height = s.height; });
+              }
+            }, 750); // Delay to ensure UI updates before PDF generation
+          };
+
+          // Render the main application UI
+          return (
+            <div ref={pdfExportRootRef} className="max-w-4xl mx-auto bg-white shadow-lg rounded-lg overflow-hidden my-4 md:my-8">
+              <Modal isOpen={modalInfo.isOpen} title={modalInfo.title} message={modalInfo.message} isHtmlMessage={modalInfo.isHtml} onClose={closeAppModal} />
+              <header className="bg-blue-600 text-white p-6">
+                <h1 className="text-2xl md:text-3xl font-bold text-center">室內空氣質素計算器 (Indoor Air Quality Calculator)</h1>
+              </header>
+              <main id="pdfExportContentContainer" className="p-4 md:p-6 space-y-6">
+                {/* Tabs for switching between IAQ Checker and Guideline Summary */}
+                <div className="border-b border-gray-200">
+                  <nav className="-mb-px flex space-x-2 md:space-x-4" aria-label="Tabs">
+                    <button className={`tab-button ${activeTab === 'checker' ? 'active' : ''}`} onClick={() => setActiveTab('checker')}>IAQ 檢測 (IAQ Check)</button>
+                    <button className={`tab-button ${activeTab === 'summary' ? 'active' : ''}`} onClick={() => setActiveTab('summary')}>IAQ 指引摘要 (IAQ Guideline Summary)</button>
+                  </nav>
+                </div>
+                {/* Content for IAQ Checker tab */}
+                {activeTab === 'checker' && (
+                  <div id="checkerTabContent" className="tab-content space-y-6">
+                    {/* Input fields for general test information */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6 p-4 border border-gray-200 rounded-md bg-gray-50">
+                        <div>
+                          <label htmlFor="testLocation" className="block text-sm font-medium text-gray-700">檢測地點 (Test Location)</label>
+                          <input type="text" id="testLocation" value={testLocation} onChange={e => setTestLocation(e.target.value)} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="例如: XX大廈A座5樓" />
+                        </div>
+                        <div>
+                          <label htmlFor="premisesType" className="block text-sm font-medium text-gray-700">場所類型 (Premises Type)</label>
+                          <input type="text" id="premisesType" value={premisesType} onChange={e => setPremisesType(e.target.value)} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="例如: 辦公室, 商場" />
+                        </div>
+                        <div>
+                          <label htmlFor="testDate" className="block text-sm font-medium text-gray-700">檢測日期 (Test Date)</label>
+                          <input type="date" id="testDate" value={testDate} onChange={e => setTestDate(e.target.value)} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" />
+                        </div>
+                        <div>
+                          <label htmlFor="testTime" className="block text-sm font-medium text-gray-700">檢測時間 (Test Time)</label>
+                          <input type="time" id="testTime" value={testTime} onChange={e => setTestTime(e.target.value)} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm" />
+                        </div>
+                    </div>
+                    {/* IAQChecker component for parameter inputs and assessment */}
+                    <IAQChecker 
+                        showModal={showAppModal} 
+                        setResultsHTML={setResultsHTML} 
+                        setExportButtonsVisible={setExportButtonsVisible} 
+                        testLocation={testLocation} 
+                        testDate={testDate} 
+                        testTime={testTime} 
+                        premisesType={premisesType} 
+                    />
+                    {/* Area to display assessment results */}
+                    <div id="pdfExportContent" className="mt-6"> 
+                        {resultsHTML && (
+                          <div id="resultsArea" className="p-4 border border-gray-200 rounded-md bg-gray-50" dangerouslySetInnerHTML={{ __html: resultsHTML }}></div>
+                        )}
+                    </div>
+                    {/* Export buttons, visible only when there are results */}
+                    {exportButtonsVisible && (
+                      <div id="exportButtonsContainer" className="mt-6 text-center">
+                        <button onClick={exportPDF} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-md focus:outline-none focus:shadow-outline transition duration-150 ease-in-out text-sm sm:text-base">
+                          輸出PDF報告 (Export PDF Report)
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Content for IAQ Guideline Summary tab */}
+                {activeTab === 'summary' && <IAQGuidelineSummary />}
+              </main>
+              <footer className="text-center text-xs text-gray-500 p-4 border-t border-gray-200">
+                <p>本工具僅供參考，所有室內空氣質素評估應以香港現行有效法律及官方指引為準。</p>
+                <p>This tool is for reference only. All IAQ assessments should be based on the current effective laws and official guidelines of Hong Kong.</p>
+                <p className="mt-2" style={{fontSize: '0.7rem'}}>參考標準/指引：<br />
+                    1. 主要評估標準參考香港環保署《辦公室及公眾場所室內空氣質素檢定計劃指南》良好級指標。<br />
+                    2. 總揮發性有機化合物 (TVOC) (異丁烯校準，瞬時值) 的參考區間是基於 RAE Systems AP-212 應用筆記中的經驗解讀，用於快速篩查，不等同於官方IAQ健康指引。<br />
+                    3. 《澳門一般公共場所室內空氣質素指引》亦為澳門地區的官方參考，請依循當地適用標準進行最終評估。
+                </p>
+                {/* Added designer credit line */}
+                <p className="mt-2 text-xs text-gray-500">設計者: Felix Leong</p> 
+              </footer>
+            </div>
+          );
+        }
+        // Render the React application into the 'root' div
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
+
